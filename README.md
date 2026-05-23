@@ -84,3 +84,7 @@ data/会议输出
 ```
 
 `config.json`、会议录音、逐字稿、上传文件和日志默认不会进入 Git 仓库。
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
