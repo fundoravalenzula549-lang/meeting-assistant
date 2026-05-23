@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "auth_token": ""
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "window_seconds": 3.0,
+    "hop_seconds": 3.0
+  },
+  "asr": {
+    "backend": "local",
+    "local_model": "large-v3-turbo",
+    "remote_url": "http://127.0.0.1:8978"
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "qwen3:4b"
+  },
+  "security": {
+    "allow_remote": false,
+    "require_token": true
+  }
+}

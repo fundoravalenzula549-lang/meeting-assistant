@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+.env
+config.json
+data/**
+!data/.gitkeep
+!data/sessions/
+!data/sessions/.gitkeep
+!data/会议输出/
+!data/会议输出/.gitkeep
+!data/uploads/
+!data/uploads/.gitkeep
+*.log

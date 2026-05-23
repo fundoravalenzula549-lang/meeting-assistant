@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meeting Transcription Workbench</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="panel setup">
+      <div class="brand">
+        <div>
+          <h1>会议转录工作台</h1>
+          <p id="statusText">待机</p>
+        </div>
+        <span id="liveDot" class="dot"></span>
+      </div>
+
+      <div id="recordingBanner" class="recording-banner" hidden>
+        <div class="recording-main">
+          <span class="rec-light"></span>
+          <strong id="recordingLabel">录音进行中</strong>
+        </div>
+        <div id="recordingElapsed" class="recording-elapsed">00:00</div>
+        <div id="recordingHint" class="recording-hint">正在监听系统音频和麦克风</div>
+      </div>
+
+      <label class="hidden-field">会议标题<input id="title" value="Online Meeting"></label>
+      <label class="hidden-field">会议主题<input id="topic" placeholder="例如：产品周会 / 客户访谈 / 技术评审"></label>
+
+      <div class="field-group">
+        <div class="field-title">语音源</div>
+        <div class="source-toggle" role="radiogroup" aria-label="语音源">
+          <label class="source-choice">
+            <input type="radio" name="audioSource" value="live" checked>
+            <span>实时语音</span>
+          </label>
+          <label class="source-choice">
+            <input type="radio" name="audioSource" value="file">
+            <span>导入离线音频</span>
+          </label>
+        </div>
+      </div>
+
+      <section id="importFilePanel" class="import-panel" hidden>
+        <div class="mini-toggle" role="radiogroup" aria-label="离线导入类型">
+          <label>
+            <input type="radio" name="importMode" value="single" checked>
+            <span>单个音频</span>
+          </label>
+          <label>
+            <input type="radio" name="importMode" value="dual">
+            <span>双轨音频</span>
+          </label>
+        </div>
+        <div id="singleImportFields">
+          <label class="file-drop" for="audioFile">
+            <input id="audioFile" type="file" hidden>
+            <span class="file-drop-title">添加音频文件</span>
+            <span id="importFileName" class="file-drop-meta">尚未选择文件</span>
+          </label>
+        </div>
+        <div id="dualImportFields" class="dual-import-fields" hidden>
+          <label class="file-drop compact" for="systemAudioFile">
+            <input id="systemAudioFile" type="file" hidden>
+            <span class="file-drop-title">添加系统音频</span>
+            <span id="systemImportFileName" class="file-drop-meta">会议其他人的声音</span>
+          </label>
+          <label class="file-drop compact" for="micAudioFile">
+            <input id="micAudioFile" type="file" hidden>
+            <span class="file-drop-title">添加麦克风音频</span>
+            <span id="micImportFileName" class="file-drop-meta">我的声音</span>
+          </label>
+        </div>
+      </section>
+
+      <div class="grid2">
+        <label>语言
+          <select id="language">
+            <option value="auto">自动</option>
+            <option value="zh" selected>中文</option>
+            <option value="en">英文</option>
+            <option value="ja">日文</option>
+          </select>
+        </label>
+        <label>翻译
+          <select id="translation">
+            <option value="none">不翻译</option>
+            <option value="en2zh">英译中</option>
+            <option value="zh2en">中译英</option>
+            <option value="ja2zh">日译中</option>
+            <option value="zh2ja">中译日</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="deviceFields" class="grid2">
+        <label>系统音频<select id="systemDevice" disabled></select></label>
+        <label>我的麦克风<select id="micDevice" disabled></select></label>
+      </div>
+
+      <div class="grid2">
+        <label>ASR
+          <select id="asrBackend">
+            <option value="local">本机</option>
+            <option value="remote">远端 GPU</option>
+          </select>
+        </label>
+        <label>模型<input id="localModel" value="large-v3-turbo" disabled></label>
+      </div>
+      <label id="remoteUrlField">远端 ASR URL<input id="remoteUrl" value="http://127.0.0.1:8978"></label>
+
+      <div class="checks">
+        <label id="recordOption"><input id="record" type="checkbox" checked> 录音</label>
+        <label><input id="postAi" type="checkbox" checked> 会后整理</label>
+        <label><input id="diarize" type="checkbox" checked> Speaker 识别</label>
+      </div>
+
+      <label id="tokenField">访问 Token<input id="token" type="password" placeholder="远程访问时填写"></label>
+
+      <div class="actions">
+        <button id="startBtn" class="primary">开始</button>
+        <button id="pauseBtn">暂停</button>
+        <button id="stopBtn" class="danger">停止</button>
+      </div>
+      <div class="actions small">
+        <button id="muteSystemBtn" hidden>静音对方</button>
+        <button id="muteMicBtn" hidden>静音我方</button>
+        <button id="refreshBtn">刷新设备</button>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <strong id="sessionTitle">实时字幕</strong>
+          <span id="sessionId"></span>
+        </div>
+        <div id="topRecordingBadge" class="top-recording-badge" hidden>
+          <span class="rec-light"></span>
+          <span id="topRecordingLabel">正在录音</span> <strong id="topRecordingElapsed">00:00</strong>
+        </div>
+        <div id="stats">0 句</div>
+      </header>
+      <div id="transcript" class="transcript"></div>
+      <footer class="files">
+        <strong>会后文件</strong>
+        <div class="output-row">
+          <div id="outputPath" class="output-path"></div>
+          <a id="openOutputDirLink" class="path-link" href="#">打开本地目录</a>
+        </div>
+        <div id="files"></div>
+      </footer>
+    </section>
+  </main>
+  <div id="stopConfirm" class="modal-backdrop" hidden>
+    <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="stopConfirmTitle">
+      <h2 id="stopConfirmTitle">确认停止转录？</h2>
+      <p>停止后会保存录音、逐字稿和会后文件，AI 纪要会继续在后台整理。</p>
+      <div class="confirm-actions">
+        <button id="cancelStopBtn">继续转录</button>
+        <button id="confirmStopBtn" class="danger solid">确认停止</button>
+      </div>
+    </section>
+  </div>
+  <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

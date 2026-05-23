@@ -1,0 +1,40 @@
+[project]
+name = "meeting-transcription-workbench"
+version = "0.1.0"
+description = "Personal and small-team online meeting transcription workbench."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "numpy>=1.26",
+  "sounddevice>=0.4.6",
+  "faster-whisper>=1.0.0",
+  "opencc-python-reimplemented>=0.1.7",
+  "mlx-whisper>=0.4.0; platform_machine == 'arm64' and sys_platform == 'darwin'",
+  "scipy>=1.12; platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+overlay = ["PyQt6>=6.6", "websocket-client>=1.7"]
+diarization = ["resemblyzer>=0.1.4", "spectralcluster>=0.2.18"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+meeting-workbench = "app.main:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "docs*"]
+
+[tool.setuptools.package-data]
+app = ["static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
