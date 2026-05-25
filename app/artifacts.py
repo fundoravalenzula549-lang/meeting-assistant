@@ -18,7 +18,7 @@ _GENERIC_TITLES = {
 
 
 def session_timestamp(info: SessionInfo) -> str:
-    return datetime.fromtimestamp(info.created_at).strftime("%Y%m%d_%H%M%S")
+    return datetime.fromtimestamp(info.created_at).strftime("%Y%m%d_%H%M")
 
 
 def session_subject(info: SessionInfo) -> str:

@@ -46,7 +46,11 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/api/config")
     async def api_config():
-        return public_config(config)
+        data = public_config(config)
+        data["features"] = {
+            "speaker_diarization_available": False,
+        }
+        return data
 
     @app.get("/api/devices")
     async def api_devices(_auth=Depends(_auth_dependency)):
@@ -212,8 +216,8 @@ def _settings_from_body(body: dict, config: AppConfig) -> MeetingSettings:
         remote_url=body.get("remote_url") or config.asr.remote_url,
         record=bool(body.get("record", True)),
         enable_overlay=bool(body.get("enable_overlay", False)),
-        enable_post_meeting_ai=bool(body.get("enable_post_meeting_ai", False)),
-        enable_speaker_diarization=bool(body.get("enable_speaker_diarization", True)),
+        enable_post_meeting_ai=False,
+        enable_speaker_diarization=bool(body.get("enable_speaker_diarization", False)),
     )
 
 
@@ -236,7 +240,7 @@ async def _save_import_upload(
     upload_dir.mkdir(parents=True, exist_ok=True)
     target = upload_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{original}"
     size = 0
-    limit = 500 * 1024 * 1024
+    limit = 1024 * 1024 * 1024
     try:
         with target.open("wb") as fh:
             while True:

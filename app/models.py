@@ -65,12 +65,12 @@ class MeetingSettings:
     system_device_id: int | str | None = None
     mic_device_id: int | str | None = None
     asr_backend: str = "local"
-    local_model: str = "large-v3-turbo"
+    local_model: str = "Qwen/Qwen3-ASR-0.6B"
     remote_url: str = "http://127.0.0.1:8978"
     record: bool = True
     enable_overlay: bool = False
     enable_post_meeting_ai: bool = False
-    enable_speaker_diarization: bool = True
+    enable_speaker_diarization: bool = False
 
 
 @dataclass(slots=True)

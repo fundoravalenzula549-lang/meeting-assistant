@@ -30,7 +30,7 @@ class AudioConfig:
 @dataclass(slots=True)
 class ASRConfig:
     backend: str = "local"
-    local_model: str = "large-v3-turbo"
+    local_model: str = "Qwen/Qwen3-ASR-0.6B"
     remote_url: str = "http://127.0.0.1:8978"
 
 

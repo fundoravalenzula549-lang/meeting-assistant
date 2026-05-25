@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meeting Transcription Workbench</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260526-stop-loading">
 </head>
 <body>
   <main class="shell">
@@ -23,18 +23,30 @@
           <strong id="recordingLabel">录音进行中</strong>
         </div>
         <div id="recordingElapsed" class="recording-elapsed">00:00</div>
-        <div id="recordingHint" class="recording-hint">正在监听系统音频和麦克风</div>
+        <div id="recordingHint" class="recording-hint">停止后自动整段转写</div>
       </div>
 
       <label class="hidden-field">会议标题<input id="title" value="Online Meeting"></label>
-      <label class="hidden-field">会议主题<input id="topic" placeholder="例如：产品周会 / 客户访谈 / 技术评审"></label>
+      <div class="topic-field">
+        <label for="topic">会议主题</label>
+        <div class="topic-input-row">
+          <input id="topic" placeholder="例如：项目例会 / 临时会议">
+          <button id="clearTopicBtn" class="icon-btn" type="button" aria-label="清除会议主题" title="清除会议主题">×</button>
+        </div>
+        <div class="topic-presets" aria-label="会议主题快捷选项">
+          <button type="button" data-topic="项目例会">项目例会</button>
+          <button type="button" data-topic="公司周会">公司周会</button>
+          <button type="button" data-topic="项目细节对齐">项目细节对齐</button>
+          <button type="button" data-topic="临时会议">临时会议</button>
+        </div>
+      </div>
 
       <div class="field-group">
         <div class="field-title">语音源</div>
         <div class="source-toggle" role="radiogroup" aria-label="语音源">
           <label class="source-choice">
             <input type="radio" name="audioSource" value="live" checked>
-            <span>实时语音</span>
+            <span>录音转写</span>
           </label>
           <label class="source-choice">
             <input type="radio" name="audioSource" value="file">
@@ -57,6 +69,7 @@
         <div id="singleImportFields">
           <label class="file-drop" for="audioFile">
             <input id="audioFile" type="file" hidden>
+            <button class="file-clear-btn" type="button" data-clear-file="audioFile" aria-label="取消导入音频文件" title="取消导入">×</button>
             <span class="file-drop-title">添加音频文件</span>
             <span id="importFileName" class="file-drop-meta">点击选择，或拖入音频文件</span>
           </label>
@@ -64,11 +77,13 @@
         <div id="dualImportFields" class="dual-import-fields" hidden>
           <label class="file-drop compact" for="systemAudioFile">
             <input id="systemAudioFile" type="file" hidden>
+            <button class="file-clear-btn" type="button" data-clear-file="systemAudioFile" aria-label="取消导入系统音频" title="取消导入">×</button>
             <span class="file-drop-title">添加系统音频</span>
             <span id="systemImportFileName" class="file-drop-meta">点击选择，或拖入对方音频</span>
           </label>
           <label class="file-drop compact" for="micAudioFile">
             <input id="micAudioFile" type="file" hidden>
+            <button class="file-clear-btn" type="button" data-clear-file="micAudioFile" aria-label="取消导入麦克风音频" title="取消导入">×</button>
             <span class="file-drop-title">添加麦克风音频</span>
             <span id="micImportFileName" class="file-drop-meta">点击选择，或拖入我方音频</span>
           </label>
@@ -107,14 +122,20 @@
             <option value="remote">远端 GPU</option>
           </select>
         </label>
-        <label>模型<input id="localModel" value="large-v3-turbo" disabled></label>
+        <label>模型
+          <select id="localModel">
+            <option value="large-v3-turbo">Large V3 Turbo</option>
+            <option value="Qwen/Qwen3-ASR-0.6B" selected>Qwen3-ASR-0.6B</option>
+            <option value="funasr/paraformer-zh-streaming">Paraformer-zh-streaming</option>
+          </select>
+        </label>
       </div>
       <label id="remoteUrlField">远端 ASR URL<input id="remoteUrl" value="http://127.0.0.1:8978"></label>
 
       <div class="checks">
-        <label id="recordOption"><input id="record" type="checkbox" checked> 录音</label>
-        <label><input id="postAi" type="checkbox"> 会后整理</label>
-        <label><input id="diarize" type="checkbox" checked> Speaker 识别</label>
+        <label id="recordOption"><input id="record" type="checkbox" checked disabled> 录音后转写</label>
+        <label id="postAiOption" hidden><input id="postAi" type="checkbox"> 会后整理</label>
+        <label id="diarizeOption" hidden><input id="diarize" type="checkbox"> Speaker 识别</label>
       </div>
 
       <label id="tokenField">访问 Token<input id="token" type="password" placeholder="远程访问时填写"></label>
@@ -134,7 +155,7 @@
     <section class="workspace">
       <header class="topbar">
         <div>
-          <strong id="sessionTitle">实时字幕</strong>
+          <strong id="sessionTitle">录音转写</strong>
           <span id="sessionId"></span>
         </div>
         <div id="topRecordingBadge" class="top-recording-badge" hidden>
@@ -156,15 +177,26 @@
   </main>
   <div id="stopConfirm" class="modal-backdrop" hidden>
     <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="stopConfirmTitle">
-      <h2 id="stopConfirmTitle">确认停止转录？</h2>
-      <p>停止后会保存录音、逐字稿和会后文件，AI 纪要会继续在后台整理。</p>
+      <h2 id="stopConfirmTitle">确认停止录音？</h2>
+      <p>停止后会保存录音，并用所选模型整段生成逐字稿和会后文件。</p>
       <div class="confirm-actions">
         <button id="cancelStopBtn">继续转录</button>
         <button id="confirmStopBtn" class="danger solid">确认停止</button>
       </div>
     </section>
   </div>
+  <div id="importCompleteModal" class="modal-backdrop" hidden>
+    <section class="confirm-modal complete-modal" role="dialog" aria-modal="true" aria-labelledby="importCompleteTitle">
+      <h2 id="importCompleteTitle">离线转写已完成</h2>
+      <p id="importCompleteMessage">音频已经转成逐字稿，会后文件已经生成。</p>
+      <div id="importCompleteFiles" class="complete-file-hint"></div>
+      <div class="confirm-actions">
+        <button id="completeOpenDirBtn">打开逐字稿目录</button>
+        <button id="completeCloseBtn" class="primary">知道了</button>
+      </div>
+    </section>
+  </div>
   <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
-  <script src="/static/app.js?v=20260525-drag-import"></script>
+  <script src="/static/app.js?v=20260526-clear-import-file"></script>
 </body>
 </html>

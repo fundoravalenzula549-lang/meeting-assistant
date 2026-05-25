@@ -15,8 +15,15 @@ let stopping = false;
 let activeAudioSource = "live";
 let recordingStartedAt = 0;
 let elapsedTimer = null;
+let completionPollTimer = null;
+let completionHandled = false;
 let lastRenderedBySource = {};
 let renderedSegmentKeys = new Set();
+let waveformShown = false;
+let waveformBars = [];
+let waveformHistory = [];
+let waveformLevels = {system: 0, mic: 0};
+const waveformBarCount = 64;
 
 function headers() {
   const token = $("token").value.trim();
@@ -34,11 +41,14 @@ async function loadConfig() {
     $("outputPath").textContent = `Finder 默认打开：${cfg.data_dir}/会议输出逐字稿（录音和纪要在同级目录）`;
   }
   if (cfg.asr) {
-    $("localModel").value = cfg.asr.local_model || "large-v3-turbo";
+    const configuredModel = cfg.asr.local_model || "Qwen/Qwen3-ASR-0.6B";
+    ensureModelOption(configuredModel);
+    $("localModel").value = configuredModel;
     $("remoteUrl").value = cfg.asr.remote_url || "http://127.0.0.1:8978";
     $("asrBackend").value = cfg.asr.backend || "local";
     updateAsrFields();
   }
+  updateDiarizationAvailability(false);
   await loadDevices();
   connectWs();
   await restoreRunningSession();
@@ -63,7 +73,7 @@ async function loadDevices() {
 }
 
 async function openOutputDir(event) {
-  event.preventDefault();
+  event?.preventDefault();
   try {
     const res = await fetch("/api/open-output-dir", {method: "POST", headers: headers()});
     const data = await safeJson(res);
@@ -92,9 +102,9 @@ function bodyFromForm() {
     asr_backend: $("asrBackend").value,
     local_model: $("localModel").value,
     remote_url: $("remoteUrl").value,
-    record: $("record").checked,
-    enable_post_meeting_ai: $("postAi").checked,
-    enable_speaker_diarization: $("diarize").checked
+    record: selectedAudioSource() === "live" ? true : $("record").checked,
+    enable_post_meeting_ai: false,
+    enable_speaker_diarization: false
   };
 }
 
@@ -107,7 +117,8 @@ async function startMeeting() {
   prepareNewRun();
   if (!validateAudioDeviceSelection()) return;
   setStatus("启动中", false);
-  updateRecordingUi(true, "正在启动录音", "正在准备音频设备和 ASR");
+  showRecordingWaveform("recording");
+  updateRecordingUi(true, "正在启动录音", "正在准备音频设备");
   const res = await fetch("/api/start", {method: "POST", headers: headers(), body: JSON.stringify(bodyFromForm())});
   const data = await res.json();
   if (!data.ok) {
@@ -119,7 +130,8 @@ async function startMeeting() {
   $("sessionTitle").textContent = data.session.title;
   $("sessionId").textContent = currentSession;
   setStatus("运行中", true);
-  updateRecordingUi(true, "录音进行中", "正在监听系统音频和麦克风");
+  updateRecordingUi(true, "录音进行中", "停止后自动整段转写");
+  startCompletionPoll();
 }
 
 async function startImportedAudio() {
@@ -161,18 +173,27 @@ async function startImportedAudio() {
   $("sessionId").textContent = currentSession;
   setStatus("离线转写中", true);
   updateRecordingUi(true, "离线转写中", `正在把 ${activeName} 转为逐字稿`);
+  startCompletionPoll();
 }
 
 function prepareNewRun() {
   clearRefreshCountdown();
+  clearCompletionPoll();
+  closeImportCompleteModal();
   stopRequested = false;
   stopCompleted = false;
+  completionHandled = false;
   stopping = false;
   sentenceCount = 0;
   lastRenderedBySource = {};
   renderedSegmentKeys = new Set();
+  waveformShown = false;
+  waveformBars = [];
+  waveformHistory = [];
+  waveformLevels = {system: 0, mic: 0};
   $("transcript").innerHTML = "";
   $("files").innerHTML = "";
+  $("stats").textContent = "0 句";
   setStopBusy(false);
 }
 
@@ -217,8 +238,10 @@ function updateAudioSourceUi() {
   $("importFilePanel").hidden = !isFile;
   $("deviceFields").hidden = isFile;
   $("recordOption").hidden = isFile;
+  $("record").checked = true;
+  $("record").disabled = !isFile;
   $("refreshBtn").hidden = isFile;
-  $("sessionTitle").textContent = isFile ? "离线音频转写" : "实时字幕";
+  $("sessionTitle").textContent = isFile ? "离线音频转写" : "录音转写";
   if (!running) {
     setStatus(isFile ? "待导入" : "待机", false);
   }
@@ -238,6 +261,9 @@ function updateImportFileName() {
   $("systemImportFileName").textContent = systemFile ? `${systemFile.name} · ${formatBytes(systemFile.size)}` : "点击选择，或拖入对方音频";
   const micFile = $("micAudioFile").files[0];
   $("micImportFileName").textContent = micFile ? `${micFile.name} · ${formatBytes(micFile.size)}` : "点击选择，或拖入我方音频";
+  syncFileDropState("audioFile");
+  syncFileDropState("systemAudioFile");
+  syncFileDropState("micAudioFile");
 }
 
 function setupImportDropZones() {
@@ -279,6 +305,32 @@ function setupImportDropZones() {
   });
 }
 
+function setupClearFileButtons() {
+  for (const button of document.querySelectorAll("[data-clear-file]")) {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const input = $(button.dataset.clearFile || "");
+      if (!input) return;
+      clearFileInput(input);
+      updateImportFileName();
+    });
+  }
+}
+
+function setupTopicControls() {
+  for (const button of document.querySelectorAll("[data-topic]")) {
+    button.addEventListener("click", () => {
+      $("topic").value = button.dataset.topic || "";
+      $("topic").focus();
+    });
+  }
+  $("clearTopicBtn").addEventListener("click", () => {
+    $("topic").value = "";
+    $("topic").focus();
+  });
+}
+
 function firstDroppedFile(dataTransfer) {
   return Array.from(dataTransfer?.files || []).find(file => file && file.name) || null;
 }
@@ -288,6 +340,18 @@ function setFileInput(input, file) {
   transfer.items.add(file);
   input.files = transfer.files;
   input.dispatchEvent(new Event("change", {bubbles: true}));
+}
+
+function clearFileInput(input) {
+  input.value = "";
+  input.dispatchEvent(new Event("change", {bubbles: true}));
+}
+
+function syncFileDropState(inputId) {
+  const input = $(inputId);
+  const dropZone = input?.closest(".file-drop");
+  if (!dropZone) return;
+  dropZone.classList.toggle("has-file", Boolean(input.files?.[0]));
 }
 
 function stopMeeting() {
@@ -302,9 +366,10 @@ async function performStopMeeting() {
   stopping = true;
   closeStopConfirm();
   setStatus("停止中", false);
-  updateRecordingUi(true, "正在停止录音", "正在保存录音、逐字稿和会后文件");
+  showTranscribingLoader();
+  updateRecordingUi(true, "正在停止录音", "正在整段转写录音");
   setStopBusy(true);
-  showToast("正在停止会议", "正在保存录音和逐字稿，AI 纪要会在后台继续整理。", "warning", {persist: true});
+  showToast("正在停止会议", "正在保存录音，并用所选模型整段生成逐字稿。", "warning", {persist: true});
   fetch("/api/stop", {method: "POST", headers: headers()}).then(async (res) => {
     if (!res.ok) {
       const data = await safeJson(res);
@@ -319,10 +384,11 @@ async function togglePause() {
   await fetch("/api/pause", {method: "POST", headers: headers(), body: JSON.stringify({paused})});
   $("pauseBtn").textContent = paused ? "继续" : "暂停";
   setStatus(paused ? "已暂停" : "运行中", !paused);
+  setWaveformMode(paused ? "paused" : "recording");
   updateRecordingUi(
     true,
-    paused ? "转录已暂停" : "录音进行中",
-    paused ? "当前会话仍在，点击继续恢复实时转录" : "正在监听系统音频和麦克风"
+    paused ? "录音已暂停" : "录音进行中",
+    paused ? "点击继续恢复录音" : "停止后自动整段转写"
   );
 }
 
@@ -358,9 +424,11 @@ async function restoreRunningSession() {
   updateRecordingUi(
     true,
     activeAudioSource === "file" ? "离线转写中" : "录音进行中",
-    activeAudioSource === "file" ? "正在把导入音频转为逐字稿" : "正在监听系统音频和麦克风"
+    activeAudioSource === "file" ? "正在把导入音频转为逐字稿" : "停止后自动整段转写"
   );
+  if (activeAudioSource !== "file") showRecordingWaveform(stopping ? "transcribing" : paused ? "paused" : "recording");
   if (currentSession) await loadSessionSegments(currentSession);
+  startCompletionPoll();
 }
 
 async function loadSessionSegments(sessionId) {
@@ -375,6 +443,9 @@ async function loadSessionSegments(sessionId) {
 function handleEvent(ev) {
   if (ev.type === "status") {
     setStatus(ev.message || ev.status || "处理中", ev.status === "running");
+    if (activeAudioSource !== "file" && ev.status === "stopping") {
+      setWaveformMode("transcribing");
+    }
     return;
   }
   if (ev.type === "started") {
@@ -386,8 +457,14 @@ function handleEvent(ev) {
     if (activeAudioSource === "file") {
       updateRecordingUi(true, "离线转写中", "正在把导入音频转为逐字稿");
     } else {
-      updateRecordingUi(true, "录音进行中", "正在监听系统音频和麦克风");
+      showRecordingWaveform("recording");
+      updateRecordingUi(true, "录音进行中", "停止后自动整段转写");
     }
+    return;
+  }
+  if (ev.type === "audio_level") {
+    if (currentSession && ev.session_id && ev.session_id !== currentSession) return;
+    updateRecordingWaveform(ev.source, ev.level);
     return;
   }
   if (ev.type === "segment") {
@@ -396,19 +473,11 @@ function handleEvent(ev) {
     return;
   }
   if (ev.type === "completed") {
-    stopping = false;
-    updateRecordingUi(false);
-    setStatus("已完成", false);
-    renderFiles(ev.session_id, ev.files || {});
-    if (activeAudioSource === "file") {
-      completeImportedAudio(ev.session_id, ev.files || {});
-    }
-    if (stopRequested) {
-      completeStop(ev.session_id, ev.files || {});
-    }
+    completeRun(ev.session_id, ev.files || {});
     return;
   }
   if (ev.type === "error") {
+    clearCompletionPoll();
     setStatus(ev.message || "错误", false);
     showToast("运行错误", ev.message || "后端任务失败。", "error");
     return;
@@ -419,6 +488,8 @@ function handleEvent(ev) {
 }
 
 function addSegment(seg, asr, options = {}) {
+  if (waveformShown) hideRecordingWaveform(true);
+  hideTranscribingLoader();
   const key = segmentKey(seg);
   if (renderedSegmentKeys.has(key)) return;
   const sourceKey = seg.source || "system";
@@ -481,6 +552,135 @@ function scrollTranscriptToBottom() {
   requestAnimationFrame(() => {
     transcript.scrollTop = transcript.scrollHeight;
   });
+}
+
+function showRecordingWaveform(mode = "recording") {
+  const transcript = $("transcript");
+  waveformShown = true;
+  waveformHistory = new Array(waveformBarCount).fill(0.04);
+  waveformLevels = {system: 0, mic: 0};
+  transcript.innerHTML = `
+    <section id="recordingWaveform" class="recording-waveform" data-mode="${mode}">
+      <div class="waveform-status">
+        <span class="rec-light"></span>
+        <strong id="waveformTitle">${waveformTitle(mode)}</strong>
+        <span id="waveformSubtitle">${waveformSubtitle(mode)}</span>
+      </div>
+      <div id="waveformBars" class="waveform-bars" aria-hidden="true">
+        ${Array.from({length: waveformBarCount}, () => '<span class="waveform-bar"></span>').join("")}
+      </div>
+      <div class="waveform-tracks">
+        <div class="waveform-track">
+          <span>对方</span>
+          <i><b id="systemWaveMeter"></b></i>
+        </div>
+        <div class="waveform-track">
+          <span>我方</span>
+          <i><b id="micWaveMeter"></b></i>
+        </div>
+      </div>
+    </section>
+  `;
+  waveformBars = [...document.querySelectorAll(".waveform-bar")];
+  $("stats").textContent = "录音中";
+  renderWaveform();
+}
+
+function hideRecordingWaveform(clear = false) {
+  waveformShown = false;
+  waveformBars = [];
+  waveformHistory = [];
+  waveformLevels = {system: 0, mic: 0};
+  if (clear && $("recordingWaveform")) {
+    $("recordingWaveform").remove();
+  }
+}
+
+function showTranscribingLoader() {
+  const transcript = $("transcript");
+  hideRecordingWaveform(false);
+  transcript.innerHTML = `
+    <section id="transcribingLoader" class="transcribing-loader">
+      <div class="loader-ring" aria-hidden="true"></div>
+      <strong>整段转写中</strong>
+      <p>录音已经停止，正在用所选模型生成逐字稿。</p>
+      <div class="loader-steps" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+    </section>
+  `;
+  $("stats").textContent = "转写中";
+}
+
+function hideTranscribingLoader() {
+  const loader = $("transcribingLoader");
+  if (loader) loader.remove();
+}
+
+function setWaveformMode(mode) {
+  const panel = $("recordingWaveform");
+  if (!panel) {
+    if (mode === "transcribing") showTranscribingLoader();
+    return;
+  }
+  if (mode === "transcribing") {
+    showTranscribingLoader();
+    return;
+  }
+  panel.dataset.mode = mode;
+  $("waveformTitle").textContent = waveformTitle(mode);
+  $("waveformSubtitle").textContent = waveformSubtitle(mode);
+  if (mode === "transcribing") {
+    $("stats").textContent = "转写中";
+  } else if (mode === "paused") {
+    $("stats").textContent = "已暂停";
+  } else {
+    $("stats").textContent = "录音中";
+  }
+}
+
+function waveformTitle(mode) {
+  if (mode === "transcribing") return "整段转写中";
+  if (mode === "paused") return "录音暂停";
+  return "录音中";
+}
+
+function waveformSubtitle(mode) {
+  if (mode === "transcribing") return "正在用所选模型生成逐字稿";
+  if (mode === "paused") return "继续后恢复写入录音";
+  return "停止后自动生成逐字稿";
+}
+
+function updateRecordingWaveform(source, level) {
+  if (activeAudioSource === "file") return;
+  if (!waveformShown && running && !stopping) showRecordingWaveform("recording");
+  const key = source === "mic" ? "mic" : "system";
+  waveformLevels[key] = clamp01(Number(level) || 0);
+  const combined = Math.max(waveformLevels.system, waveformLevels.mic, 0.03);
+  waveformHistory.push(combined);
+  waveformHistory = waveformHistory.slice(-waveformBarCount);
+  renderWaveform();
+}
+
+function renderWaveform() {
+  if (!waveformBars.length) return;
+  const padded = new Array(Math.max(0, waveformBarCount - waveformHistory.length)).fill(0.04).concat(waveformHistory);
+  waveformBars.forEach((bar, index) => {
+    const value = clamp01(padded[index] || 0.04);
+    const shaped = Math.max(0.08, Math.sqrt(value));
+    bar.style.height = `${Math.round(12 + shaped * 112)}px`;
+    bar.style.opacity = String(0.34 + shaped * 0.66);
+  });
+  const systemMeter = $("systemWaveMeter");
+  const micMeter = $("micWaveMeter");
+  if (systemMeter) systemMeter.style.width = `${Math.round(clamp01(waveformLevels.system) * 100)}%`;
+  if (micMeter) micMeter.style.width = `${Math.round(clamp01(waveformLevels.mic) * 100)}%`;
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function mergeRealtimeSegment(previous, seg) {
@@ -632,6 +832,58 @@ function setStopBusy(busy) {
   $("stopBtn").textContent = busy ? "停止中" : "停止";
 }
 
+function startCompletionPoll() {
+  clearCompletionPoll();
+  completionPollTimer = setInterval(() => {
+    pollRuntimeCompletion().catch(() => {});
+  }, 2000);
+  pollRuntimeCompletion().catch(() => {});
+}
+
+function clearCompletionPoll() {
+  if (completionPollTimer) {
+    clearInterval(completionPollTimer);
+    completionPollTimer = null;
+  }
+}
+
+async function pollRuntimeCompletion() {
+  if (completionHandled || (!running && !stopping)) return;
+  const res = await fetch("/api/status", {headers: headers()});
+  if (!res.ok) return;
+  const data = await res.json();
+  if (currentSession && data.id && data.id !== currentSession) return;
+  if (data.status === "completed") {
+    completeRun(data.id || currentSession, data.files || {});
+    return;
+  }
+  if (data.status === "failed") {
+    completionHandled = true;
+    clearCompletionPoll();
+    updateRecordingUi(false);
+    setStatus("转写失败", false);
+    showToast("运行错误", "后端任务失败，请查看日志。", "error");
+  }
+}
+
+function completeRun(sessionId, files) {
+  if (completionHandled) return;
+  completionHandled = true;
+  clearCompletionPoll();
+  stopping = false;
+  if (activeAudioSource !== "file" && sentenceCount === 0) hideRecordingWaveform(true);
+  hideTranscribingLoader();
+  updateRecordingUi(false);
+  setStatus("已完成", false);
+  renderFiles(sessionId, files || {});
+  if (activeAudioSource === "file") {
+    completeImportedAudio(sessionId, files || {});
+  }
+  if (stopRequested) {
+    completeStop(sessionId, files || {});
+  }
+}
+
 async function confirmCompletedAfterStop() {
   for (let attempt = 0; attempt < 600 && stopRequested && !stopCompleted; attempt += 1) {
     const res = await fetch("/api/status", {headers: headers()});
@@ -646,7 +898,7 @@ async function confirmCompletedAfterStop() {
       }
     }
     if (attempt === 15) {
-      showToast("仍在收尾", "录音停止请求已经发出，正在等待后端确认完成。完成后会自动刷新。", "warning", {persist: true});
+      showToast("仍在转写", "录音已经停止，后端正在整段生成逐字稿。完成后会自动刷新。", "warning", {persist: true});
     }
     await sleep(1000);
   }
@@ -662,6 +914,7 @@ function handleStopError(err) {
   stopping = false;
   setStopBusy(false);
   updateRecordingUi(false);
+  hideTranscribingLoader();
   showToast("停止失败", err.message || "停止请求没有完成，请稍后重试。", "error");
   setStatus(err.message || "停止失败", false);
 }
@@ -672,6 +925,7 @@ function completeStop(sessionId, files) {
   stopping = false;
   setStopBusy(false);
   updateRecordingUi(false);
+  hideTranscribingLoader();
   setStatus("已完成", false);
   if (sessionId && files) {
     renderFiles(sessionId, files);
@@ -685,7 +939,20 @@ function completeImportedAudio(sessionId, files) {
   if (sessionId && files) {
     renderFiles(sessionId, files);
   }
-  showToast("转写完成", "离线音频已转成逐字稿，会后文件已经生成。");
+  openImportCompleteModal(files || {});
+}
+
+function openImportCompleteModal(files = {}) {
+  const rels = Object.keys(files);
+  const transcript = rels.find(rel => rel.includes("逐字稿")) || rels[0] || "";
+  $("importCompleteMessage").textContent = "离线音频已经转成逐字稿，会后文件已经生成。";
+  $("importCompleteFiles").textContent = transcript ? `已生成：${transcript}` : "";
+  $("importCompleteModal").hidden = false;
+  $("completeCloseBtn").focus();
+}
+
+function closeImportCompleteModal() {
+  $("importCompleteModal").hidden = true;
 }
 
 function startRefreshCountdown(seconds) {
@@ -821,8 +1088,30 @@ function formatBytes(bytes) {
 
 function updateAsrFields() {
   const isRemote = $("asrBackend").value === "remote";
+  const localOnlyModels = ["Qwen3-ASR", "paraformer"];
+  for (const option of $("localModel").options) {
+    option.disabled = isRemote && localOnlyModels.some(model => option.value.includes(model));
+  }
+  if (isRemote && localOnlyModels.some(model => $("localModel").value.includes(model))) {
+    $("localModel").value = "large-v3-turbo";
+  }
   $("remoteUrlField").hidden = !isRemote;
   $("tokenField").hidden = !isRemote;
+}
+
+function ensureModelOption(value) {
+  if (!value || [...$("localModel").options].some(option => option.value === value)) return;
+  $("localModel").add(new Option(value, value));
+}
+
+function updateDiarizationAvailability(available) {
+  const option = $("diarizeOption");
+  if (!option) return;
+  option.hidden = true;
+  $("diarize").disabled = !available;
+  $("diarize").checked = false;
+  option.title = available ? "已启用离线 Speaker 1/2/3 聚类" : "需要安装 diarization 依赖后才能识别多个 Speaker";
+  option.lastChild.textContent = available ? " Speaker 识别" : " Speaker 识别（未安装）";
 }
 
 function openStopConfirm() {
@@ -838,8 +1127,13 @@ $("stopConfirm").addEventListener("click", (event) => {
   if (event.target === $("stopConfirm")) closeStopConfirm();
 });
 
+$("importCompleteModal").addEventListener("click", (event) => {
+  if (event.target === $("importCompleteModal")) closeImportCompleteModal();
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("stopConfirm").hidden) closeStopConfirm();
+  if (event.key === "Escape" && !$("importCompleteModal").hidden) closeImportCompleteModal();
 });
 
 function timeRange(seg) {
@@ -854,6 +1148,11 @@ $("startBtn").onclick = startMeeting;
 $("stopBtn").onclick = stopMeeting;
 $("confirmStopBtn").onclick = performStopMeeting;
 $("cancelStopBtn").onclick = closeStopConfirm;
+$("completeCloseBtn").onclick = closeImportCompleteModal;
+$("completeOpenDirBtn").onclick = async () => {
+  await openOutputDir();
+  closeImportCompleteModal();
+};
 $("pauseBtn").onclick = togglePause;
 $("refreshBtn").onclick = loadDevices;
 $("asrBackend").onchange = updateAsrFields;
@@ -862,6 +1161,8 @@ $("audioFile").onchange = updateImportFileName;
 $("systemAudioFile").onchange = updateImportFileName;
 $("micAudioFile").onchange = updateImportFileName;
 setupImportDropZones();
+setupClearFileButtons();
+setupTopicControls();
 for (const input of document.querySelectorAll('input[name="audioSource"]')) {
   input.onchange = updateAudioSourceUi;
 }

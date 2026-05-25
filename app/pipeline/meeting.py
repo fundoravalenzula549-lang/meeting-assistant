@@ -11,10 +11,14 @@ import wave
 from time import monotonic
 from pathlib import Path
 
+import numpy as np
+
 from ..artifacts import transcript_export_path
 from ..asr.base import ASRBackend
 from ..asr.local_faster import LocalFasterWhisperASR
 from ..asr.mlx_whisper import MLXWhisperASR
+from ..asr.paraformer import ParaformerStreamingASR, is_paraformer_model
+from ..asr.qwen import QwenASR, is_qwen_asr_model
 from ..asr.remote import RemoteASRClient
 from ..audio.capture import CaptureConfig, DualAudioCapture
 from ..audio.importer import decode_audio_to_wav, write_mixed_wav
@@ -51,6 +55,8 @@ class MeetingTask:
         self.config = config
         self.store = store
         self.events = events
+        if settings.audio_input != AudioInputMode.FILE:
+            settings.record = True
         self.info = store.create(settings)
         self.settings = settings
         self.import_audio_paths = import_audio_paths or {}
@@ -73,6 +79,7 @@ class MeetingTask:
             SourceKind.MIC: deque(maxlen=8),
             SourceKind.MIXED: deque(maxlen=8),
         }
+        self._last_audio_level_emit = {SourceKind.SYSTEM: 0.0, SourceKind.MIC: 0.0}
 
     def start(self) -> None:
         if self._task is not None:
@@ -115,10 +122,10 @@ class MeetingTask:
         try:
             await self._publish("status", status=TaskStatus.STARTING, message="starting")
             asr = self._build_asr()
-            await self._warmup_asr(asr)
             translator = self._build_translator()
             post_processor = self._build_post_processor()
             if self.settings.audio_input == AudioInputMode.FILE:
+                await self._warmup_asr(asr)
                 await self._run_imported_audio(asr, translator, post_processor)
                 return
             self._capture = DualAudioCapture(
@@ -139,21 +146,9 @@ class MeetingTask:
             self.info.status = self.status
             self.store.save_info(self.info)
             await self._publish("started", session=self.info.to_dict())
-            async for chunk in self._capture.chunks():
-                if self._stop.is_set():
-                    break
-                if self._paused.is_set():
-                    continue
-                if chunk.source in self._muted:
-                    continue
-                if chunk.source in self._source_busy:
-                    continue
-                self._source_busy.add(chunk.source)
-                self._track_chunk_task(
-                    asyncio.create_task(self._process_chunk(asr, translator, chunk)),
-                    chunk.source,
-                )
-            await self._finish(asr, post_processor)
+            await self._publish("status", status=TaskStatus.RUNNING, message="录音中")
+            await self._stop.wait()
+            await self._finish(asr, translator, post_processor)
         except Exception as exc:
             self.status = TaskStatus.FAILED
             self.info.status = self.status
@@ -289,7 +284,12 @@ class MeetingTask:
             return "Me"
         return "Speaker 1"
 
-    async def _finish(self, asr: ASRBackend, post_processor: MeetingPostProcessor | None) -> None:
+    async def _finish(
+        self,
+        asr: ASRBackend,
+        translator: Translator,
+        post_processor: MeetingPostProcessor | None,
+    ) -> None:
         if self._capture:
             await self._capture.stop()
         if self._recording_task:
@@ -298,7 +298,8 @@ class MeetingTask:
         await self._wait_for_chunk_tasks(timeout=10)
         if self._recorder:
             self._recorder.close()
-            await self._rewrite_transcript_from_recordings(asr)
+            await self._publish("status", status=TaskStatus.STOPPING, message="整段转写中")
+            await self._rewrite_transcript_from_recordings(asr, translator)
         await self._finalize_session(post_processor)
 
     async def _finalize_session(self, post_processor: MeetingPostProcessor | None) -> None:
@@ -340,12 +341,22 @@ class MeetingTask:
             async with self._asr_semaphore:
                 if _is_silent(chunk.pcm):
                     return
-                result = await asr.transcribe_pcm(
-                    chunk.pcm,
-                    chunk.sample_rate,
-                    self._language_for_source(chunk.source),
-                    self.info.path / "chunks",
-                )
+                transcribe_source_pcm = getattr(asr, "transcribe_source_pcm", None)
+                if transcribe_source_pcm:
+                    result = await transcribe_source_pcm(
+                        chunk.source,
+                        chunk.pcm,
+                        chunk.sample_rate,
+                        self._language_for_source(chunk.source),
+                        self.info.path / "chunks",
+                    )
+                else:
+                    result = await asr.transcribe_pcm(
+                        chunk.pcm,
+                        chunk.sample_rate,
+                        self._language_for_source(chunk.source),
+                        self.info.path / "chunks",
+                    )
             for part in result.segments:
                 text = normalize_chinese_text(_clean_text(part.text))
                 if not text:
@@ -389,9 +400,25 @@ class MeetingTask:
         if self._capture is None or self._recorder is None:
             return
         async for source, pcm in self._capture.raw_frames():
+            if self._paused.is_set():
+                continue
             self._recorder.write(source, pcm)
+            now = monotonic()
+            if now - self._last_audio_level_emit.get(source, 0.0) >= 0.2:
+                self._last_audio_level_emit[source] = now
+                level, peak = _audio_metrics(pcm)
+                await self._broadcast(
+                    "audio_level",
+                    source=source,
+                    level=level,
+                    peak=peak,
+                )
 
-    async def _rewrite_transcript_from_recordings(self, asr: ASRBackend) -> None:
+    async def _rewrite_transcript_from_recordings(
+        self,
+        asr: ASRBackend,
+        translator: Translator,
+    ) -> None:
         rec_dir = self.info.path / "recordings"
         realtime_count = _count_realtime_segments(self.info.path / "segments.ndjson")
         sources = (
@@ -425,6 +452,7 @@ class MeetingTask:
                         ),
                     )
                 continue
+            duration = float(len(pcm) / sample_rate) if sample_rate else 0.0
             await self._publish(
                 "status",
                 status=TaskStatus.STOPPING,
@@ -438,25 +466,31 @@ class MeetingTask:
                         self._language_for_source(source),
                         self.info.path / "chunks",
                     ),
-                    timeout=75,
+                    timeout=_final_transcript_timeout(duration),
                 )
             except Exception as exc:
                 await self._publish("warning", message=f"final transcript ASR failed: {exc}")
                 continue
-            for part in result.segments:
+            speakers = self._offline_speakers(wav_path, result.segments, source)
+            for idx, part in enumerate(result.segments):
                 text = normalize_chinese_text(_clean_text(part.text))
                 if not text:
                     continue
                 final_segments.append(
                     {
                         "source": source,
-                        "speaker": "Me" if source == SourceKind.MIC else "Speaker 1",
+                        "speaker": speakers[idx]
+                        if speakers and idx < len(speakers)
+                        else ("Me" if source == SourceKind.MIC else "Speaker 1"),
                         "start": max(0.0, float(part.start)),
                         "end": max(0.0, float(part.end)),
                         "text": text,
+                        "language": result.language,
+                        "backend": result.backend,
                     }
                 )
         if not final_segments:
+            await self._publish("warning", message="录音已保存，但没有生成可用逐字稿。")
             return
         final_segments = _dedupe_final_segments(final_segments)
         if _should_keep_realtime_transcript(final_segments, realtime_count):
@@ -467,14 +501,31 @@ class MeetingTask:
                 ),
             )
             return
+        await self._replace_transcript_with_final_segments(final_segments, translator)
+
+    async def _replace_transcript_with_final_segments(
+        self,
+        final_segments: list[dict],
+        translator: Translator,
+    ) -> None:
+        (self.info.path / "segments.ndjson").unlink(missing_ok=True)
+        for path in (self.info.path / "exports").glob("*_逐字稿.txt"):
+            path.unlink(missing_ok=True)
         final_segments.sort(key=lambda item: (item["start"], 0 if item["source"] == SourceKind.SYSTEM else 1))
-        lines = []
         for item in final_segments:
-            src = "我方" if item["source"] == SourceKind.MIC else "对方"
-            lines.append(
-                f"[{item['start']:.1f}-{item['end']:.1f}] [{src}] [{item['speaker']}] {item['text']}"
+            translation = await self._translate_text(translator, item["text"])
+            segment = Segment(
+                session_id=self.info.id,
+                source=item["source"],
+                speaker=item["speaker"],
+                start=max(0.0, float(item["start"])),
+                end=max(0.0, float(item["end"])),
+                text=item["text"],
+                language=item.get("language", self.settings.language),
+                translation=translation,
             )
-        transcript_export_path(self.info).write_text("\n\n".join(lines).strip() + "\n", encoding="utf-8")
+            self.store.append_segment(self.info, segment)
+            await self._publish("segment", segment=segment.to_dict(), asr=item.get("backend", ""))
 
     def _track_chunk_task(self, task: asyncio.Task, source: SourceKind) -> None:
         self._chunk_tasks.add(task)
@@ -497,11 +548,16 @@ class MeetingTask:
 
     def _build_asr(self) -> ASRBackend:
         backend = self.settings.asr_backend or self.config.asr.backend
+        model_name = self.settings.local_model or self.config.asr.local_model
         if backend == "remote":
-            return RemoteASRClient(self.settings.remote_url or self.config.asr.remote_url, self.settings.local_model)
+            return RemoteASRClient(self.settings.remote_url or self.config.asr.remote_url, model_name)
+        if is_paraformer_model(model_name):
+            return ParaformerStreamingASR(model_name)
+        if is_qwen_asr_model(model_name):
+            return QwenASR(model_name)
         if _should_use_mlx():
-            return MLXWhisperASR(self.settings.local_model or self.config.asr.local_model)
-        return LocalFasterWhisperASR(self.settings.local_model or self.config.asr.local_model)
+            return MLXWhisperASR(model_name)
+        return LocalFasterWhisperASR(model_name)
 
     async def _warmup_asr(self, asr: ASRBackend) -> None:
         warmup = getattr(asr, "warmup", None)
@@ -552,16 +608,10 @@ class MeetingTask:
         return Language.AUTO
 
     def _offline_speakers(self, wav_path: Path, segments, source: SourceKind) -> list[str] | None:
+        del wav_path
         if source == SourceKind.MIC:
             return ["Me"] * len(segments)
-        if not self.settings.enable_speaker_diarization:
-            return None
-        try:
-            from .speaker import OptionalSpeakerDiarizer
-
-            return OptionalSpeakerDiarizer().diarize(wav_path, segments)
-        except Exception:
-            return None
+        return None
 
     def _is_duplicate_text(self, source: SourceKind, text: str) -> bool:
         normalized = "".join(text.lower().split())
@@ -584,6 +634,10 @@ class MeetingTask:
         self.store.append_event(self.info, event)
         await self.events.publish(event)
 
+    async def _broadcast(self, event_type: str, **payload) -> None:
+        event = RuntimeEvent(type=event_type, session_id=self.info.id, payload=payload)
+        await self.events.publish(event)
+
 
 class MeetingRuntime:
     def __init__(self, config: AppConfig, store: SessionStore, events: EventBus):
@@ -597,7 +651,12 @@ class MeetingRuntime:
         settings: MeetingSettings,
         import_audio_paths: dict[SourceKind, Path] | None = None,
     ) -> MeetingTask:
-        if self.current and self.current.status in {TaskStatus.STARTING, TaskStatus.RUNNING, TaskStatus.PAUSED}:
+        if self.current and self.current.status in {
+            TaskStatus.STARTING,
+            TaskStatus.RUNNING,
+            TaskStatus.PAUSED,
+            TaskStatus.STOPPING,
+        }:
             raise RuntimeError("a meeting is already running")
         task = MeetingTask(self.config, self.store, self.events, settings, import_audio_paths=import_audio_paths)
         self.current = task
@@ -674,6 +733,20 @@ def _should_keep_realtime_transcript(final_segments: list[dict], realtime_count:
     if final_count < 3:
         return True
     return final_count < max(4, int(realtime_count * 0.45))
+
+
+def _final_transcript_timeout(duration: float) -> float:
+    return min(4 * 60 * 60, max(300.0, duration * 3.0 + 90.0))
+
+
+def _audio_metrics(pcm) -> tuple[float, float]:
+    arr = np.asarray(pcm, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return 0.0, 0.0
+    peak = float(np.max(np.abs(arr)))
+    rms = float(np.sqrt(np.mean(arr * arr)))
+    level = min(1.0, max(rms * 14.0, peak * 0.75))
+    return max(0.0, level), min(1.0, max(0.0, peak))
 
 
 def _read_wav_mono_float32(path):
