@@ -152,6 +152,7 @@ async function startImportedAudio() {
   setStatus("转写中", true);
   const activeName = mode === "dual" ? "双轨音频" : file.name;
   updateRecordingUi(true, "离线转写中", `正在处理 ${activeName}`);
+  showTranscribingLoader("离线转写中", `正在把 ${activeName} 转为逐字稿。`);
   const form = new FormData();
   form.append("settings_json", JSON.stringify(bodyFromForm()));
   if (mode === "dual") {
@@ -164,6 +165,7 @@ async function startImportedAudio() {
   const data = await safeJson(res);
   if (!res.ok || !data.ok) {
     updateRecordingUi(false);
+    hideTranscribingLoader();
     setStatus(data.detail || data.error || "导入失败", false);
     showToast("导入失败", data.detail || data.error || "离线音频没有启动转写。", "error");
     return;
@@ -173,6 +175,7 @@ async function startImportedAudio() {
   $("sessionId").textContent = currentSession;
   setStatus("离线转写中", true);
   updateRecordingUi(true, "离线转写中", `正在把 ${activeName} 转为逐字稿`);
+  showTranscribingLoader("离线转写中", `正在把 ${activeName} 转为逐字稿。`);
   startCompletionPoll();
 }
 
@@ -420,13 +423,17 @@ async function restoreRunningSession() {
   stopping = data.status === "stopping";
   if (data.title) $("sessionTitle").textContent = data.title;
   if (currentSession) $("sessionId").textContent = currentSession;
-  setStatus(paused ? "已暂停" : stopping ? "停止中" : "运行中", !paused && !stopping);
+  setStatus(activeAudioSource === "file" ? "离线转写中" : paused ? "已暂停" : stopping ? "停止中" : "运行中", !paused && !stopping);
   updateRecordingUi(
     true,
     activeAudioSource === "file" ? "离线转写中" : "录音进行中",
     activeAudioSource === "file" ? "正在把导入音频转为逐字稿" : "停止后自动整段转写"
   );
-  if (activeAudioSource !== "file") showRecordingWaveform(stopping ? "transcribing" : paused ? "paused" : "recording");
+  if (activeAudioSource === "file") {
+    showTranscribingLoader("离线转写中", "正在把导入音频转为逐字稿。");
+  } else {
+    showRecordingWaveform(stopping ? "transcribing" : paused ? "paused" : "recording");
+  }
   if (currentSession) await loadSessionSegments(currentSession);
   startCompletionPoll();
 }
@@ -443,6 +450,9 @@ async function loadSessionSegments(sessionId) {
 function handleEvent(ev) {
   if (ev.type === "status") {
     setStatus(ev.message || ev.status || "处理中", ev.status === "running");
+    if (activeAudioSource === "file") {
+      showTranscribingLoader("离线转写中", ev.message || "正在把导入音频转为逐字稿。");
+    }
     if (activeAudioSource !== "file" && ev.status === "stopping") {
       setWaveformMode("transcribing");
     }
@@ -456,6 +466,7 @@ function handleEvent(ev) {
     setStatus("运行中", true);
     if (activeAudioSource === "file") {
       updateRecordingUi(true, "离线转写中", "正在把导入音频转为逐字稿");
+      showTranscribingLoader("离线转写中", "正在把导入音频转为逐字稿。");
     } else {
       showRecordingWaveform("recording");
       updateRecordingUi(true, "录音进行中", "停止后自动整段转写");
@@ -478,6 +489,9 @@ function handleEvent(ev) {
   }
   if (ev.type === "error") {
     clearCompletionPoll();
+    completionHandled = true;
+    updateRecordingUi(false);
+    hideTranscribingLoader();
     setStatus(ev.message || "错误", false);
     showToast("运行错误", ev.message || "后端任务失败。", "error");
     return;
@@ -596,14 +610,14 @@ function hideRecordingWaveform(clear = false) {
   }
 }
 
-function showTranscribingLoader() {
+function showTranscribingLoader(title = "整段转写中", message = "录音已经停止，正在用所选模型生成逐字稿。") {
   const transcript = $("transcript");
   hideRecordingWaveform(false);
   transcript.innerHTML = `
     <section id="transcribingLoader" class="transcribing-loader">
       <div class="loader-ring" aria-hidden="true"></div>
-      <strong>整段转写中</strong>
-      <p>录音已经停止，正在用所选模型生成逐字稿。</p>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(message)}</p>
       <div class="loader-steps" aria-hidden="true">
         <span></span>
         <span></span>
@@ -861,6 +875,7 @@ async function pollRuntimeCompletion() {
     completionHandled = true;
     clearCompletionPoll();
     updateRecordingUi(false);
+    hideTranscribingLoader();
     setStatus("转写失败", false);
     showToast("运行错误", "后端任务失败，请查看日志。", "error");
   }
