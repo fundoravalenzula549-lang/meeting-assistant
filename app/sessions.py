@@ -23,9 +23,20 @@ class SessionStore:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.root = data_dir / "sessions"
-        self.output_root = data_dir / "会议输出"
+        self.recording_output_root = data_dir / "会议输出录音"
+        self.transcript_output_root = data_dir / "会议输出逐字稿"
+        self.notes_output_root = data_dir / "会议输出纪要"
+        self.output_roots = (
+            self.recording_output_root,
+            self.transcript_output_root,
+            self.notes_output_root,
+        )
         self.root.mkdir(parents=True, exist_ok=True)
-        self.output_root.mkdir(parents=True, exist_ok=True)
+        self.ensure_output_roots()
+
+    def ensure_output_roots(self) -> None:
+        for path in self.output_roots:
+            path.mkdir(parents=True, exist_ok=True)
 
     def create(self, settings: MeetingSettings) -> SessionInfo:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -68,6 +79,21 @@ class SessionStore:
                 fh.write(f"[译文] {segment.translation}\n")
             fh.write("\n")
 
+    def read_segments(self, session_id: str, limit: int = 500) -> list[dict]:
+        path = self.safe_artifact(session_id, "segments.ndjson")
+        if not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        segments = []
+        for line in lines[-max(1, limit) :]:
+            try:
+                segment = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(segment, dict):
+                segments.append(segment)
+        return segments
+
     def finalize_subject_and_exports(self, info: SessionInfo) -> None:
         transcript = find_transcript_export(info)
         if transcript is None:
@@ -107,41 +133,62 @@ class SessionStore:
         return files
 
     def publish_outputs(self, info: SessionInfo) -> dict[str, str]:
-        self.output_root.mkdir(parents=True, exist_ok=True)
+        self.ensure_output_roots()
         stem = export_stem(info)
         published: dict[str, str] = {}
-        for src, output_name in self._human_output_specs(info, stem):
+        for src, output_name, output_root in self._human_output_specs(info, stem):
             if src is None or not src.is_file():
                 continue
-            flat_dest = self.output_root / output_name
+            flat_dest = output_root / output_name
             _replace_with_link_or_copy(src, flat_dest)
             published[output_name] = str(flat_dest)
         return published
 
-    def _human_output_specs(self, info: SessionInfo, stem: str) -> list[tuple[Path | None, str]]:
+    def _human_output_specs(self, info: SessionInfo, stem: str) -> list[tuple[Path | None, str, Path]]:
         rec_dir = info.path / "recordings"
+        transcript = self.transcript_output_root
+        notes = self.notes_output_root
+        recordings = self.recording_output_root
         if info.settings.audio_input == AudioInputMode.FILE:
             imported = _imported_audio_path(info)
             system_import = _track_import_path(info, SourceKind.SYSTEM)
             mic_import = _track_import_path(info, SourceKind.MIC)
             specs = [
-                (find_transcript_export(info), f"{stem}_逐字稿.txt"),
-                (meeting_notes_export_path(info), f"{stem}_会议纪要.md"),
-                (imported, f"{stem}_导入音频{_suffix(imported)}") if imported else (None, ""),
-                (system_import, f"{stem}_导入系统音频{_suffix(system_import)}") if system_import else (None, ""),
-                (mic_import, f"{stem}_导入麦克风{_suffix(mic_import)}") if mic_import else (None, ""),
-                (rec_dir / "imported.wav", f"{stem}_转写音频.wav"),
-                (rec_dir / "system.wav", f"{stem}_系统音频.wav"),
-                (rec_dir / "mic.wav", f"{stem}_我的麦克风.wav"),
-                (rec_dir / "mixed.wav", f"{stem}_混合录音.wav"),
+                (find_transcript_export(info), f"{stem}_逐字稿.txt", transcript),
+                (meeting_notes_export_path(info), f"{stem}_会议纪要.md", notes),
+                (
+                    imported,
+                    f"{stem}_导入音频{_suffix(imported)}",
+                    recordings,
+                )
+                if imported
+                else (None, "", recordings),
+                (
+                    system_import,
+                    f"{stem}_导入系统音频{_suffix(system_import)}",
+                    recordings,
+                )
+                if system_import
+                else (None, "", recordings),
+                (
+                    mic_import,
+                    f"{stem}_导入麦克风{_suffix(mic_import)}",
+                    recordings,
+                )
+                if mic_import
+                else (None, "", recordings),
+                (rec_dir / "imported.wav", f"{stem}_转写音频.wav", recordings),
+                (rec_dir / "system.wav", f"{stem}_系统音频.wav", recordings),
+                (rec_dir / "mic.wav", f"{stem}_我的麦克风.wav", recordings),
+                (rec_dir / "mixed.wav", f"{stem}_混合录音.wav", recordings),
             ]
-            return [(src, name) for src, name in specs if name]
+            return [(src, name, root) for src, name, root in specs if name]
         return [
-            (find_transcript_export(info), f"{stem}_逐字稿.txt"),
-            (meeting_notes_export_path(info), f"{stem}_会议纪要.md"),
-            (rec_dir / "mixed.wav", f"{stem}_混合录音.wav"),
-            (rec_dir / "mic.wav", f"{stem}_我的麦克风.wav"),
-            (rec_dir / "system.wav", f"{stem}_系统音频.wav"),
+            (find_transcript_export(info), f"{stem}_逐字稿.txt", transcript),
+            (meeting_notes_export_path(info), f"{stem}_会议纪要.md", notes),
+            (rec_dir / "mixed.wav", f"{stem}_混合录音.wav", recordings),
+            (rec_dir / "mic.wav", f"{stem}_我的麦克风.wav", recordings),
+            (rec_dir / "system.wav", f"{stem}_系统音频.wav", recordings),
         ]
 
 

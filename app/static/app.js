@@ -16,6 +16,7 @@ let activeAudioSource = "live";
 let recordingStartedAt = 0;
 let elapsedTimer = null;
 let lastRenderedBySource = {};
+let renderedSegmentKeys = new Set();
 
 function headers() {
   const token = $("token").value.trim();
@@ -30,7 +31,7 @@ function authHeaders() {
 async function loadConfig() {
   const cfg = await (await fetch("/api/config")).json();
   if (cfg.data_dir) {
-    $("outputPath").textContent = `Finder 输出目录：${cfg.data_dir}/会议输出`;
+    $("outputPath").textContent = `Finder 默认打开：${cfg.data_dir}/会议输出逐字稿（录音和纪要在同级目录）`;
   }
   if (cfg.asr) {
     $("localModel").value = cfg.asr.local_model || "large-v3-turbo";
@@ -40,6 +41,7 @@ async function loadConfig() {
   }
   await loadDevices();
   connectWs();
+  await restoreRunningSession();
 }
 
 async function loadDevices() {
@@ -68,7 +70,7 @@ async function openOutputDir(event) {
     if (!res.ok || !data.ok) {
       throw new Error(data.detail || data.error || "无法打开本地目录");
     }
-    showToast("已打开本地目录", data.path || "会议输出目录已在 Finder 中打开。");
+    showToast("已打开本地目录", data.path || "逐字稿目录已在 Finder 中打开。");
   } catch (err) {
     showToast("打开失败", err.message || "无法打开本地目录。", "error");
   }
@@ -168,6 +170,7 @@ function prepareNewRun() {
   stopping = false;
   sentenceCount = 0;
   lastRenderedBySource = {};
+  renderedSegmentKeys = new Set();
   $("transcript").innerHTML = "";
   $("files").innerHTML = "";
   setStopBusy(false);
@@ -230,11 +233,61 @@ function updateImportModeUi() {
 
 function updateImportFileName() {
   const file = $("audioFile").files[0];
-  $("importFileName").textContent = file ? `${file.name} · ${formatBytes(file.size)}` : "尚未选择文件";
+  $("importFileName").textContent = file ? `${file.name} · ${formatBytes(file.size)}` : "点击选择，或拖入音频文件";
   const systemFile = $("systemAudioFile").files[0];
-  $("systemImportFileName").textContent = systemFile ? `${systemFile.name} · ${formatBytes(systemFile.size)}` : "会议其他人的声音";
+  $("systemImportFileName").textContent = systemFile ? `${systemFile.name} · ${formatBytes(systemFile.size)}` : "点击选择，或拖入对方音频";
   const micFile = $("micAudioFile").files[0];
-  $("micImportFileName").textContent = micFile ? `${micFile.name} · ${formatBytes(micFile.size)}` : "我的声音";
+  $("micImportFileName").textContent = micFile ? `${micFile.name} · ${formatBytes(micFile.size)}` : "点击选择，或拖入我方音频";
+}
+
+function setupImportDropZones() {
+  for (const dropZone of document.querySelectorAll(".file-drop")) {
+    const input = dropZone.querySelector('input[type="file"]');
+    if (!input) continue;
+
+    dropZone.addEventListener("dragenter", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drag-over");
+    });
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drag-over");
+    });
+    dropZone.addEventListener("dragleave", (event) => {
+      if (!dropZone.contains(event.relatedTarget)) {
+        dropZone.classList.remove("drag-over");
+      }
+    });
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("drag-over");
+      const file = firstDroppedFile(event.dataTransfer);
+      if (!file) {
+        showToast("没有找到文件", "请拖入本地音频文件。", "warning");
+        return;
+      }
+      setFileInput(input, file);
+      updateImportFileName();
+      showToast("已添加音频文件", file.name);
+    });
+  }
+
+  window.addEventListener("dragover", (event) => event.preventDefault());
+  window.addEventListener("drop", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest(".file-drop")) event.preventDefault();
+  });
+}
+
+function firstDroppedFile(dataTransfer) {
+  return Array.from(dataTransfer?.files || []).find(file => file && file.name) || null;
+}
+
+function setFileInput(input, file) {
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", {bubbles: true}));
 }
 
 function stopMeeting() {
@@ -282,8 +335,41 @@ function connectWs() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${proto}//${location.host}/ws${token ? "?token=" + encodeURIComponent(token) : ""}`;
   ws = new WebSocket(url);
+  ws.onopen = () => {
+    if (currentSession) loadSessionSegments(currentSession).catch(() => {});
+  };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
   ws.onclose = () => setTimeout(connectWs, 1500);
+}
+
+async function restoreRunningSession() {
+  const res = await fetch("/api/status", {headers: headers()});
+  if (!res.ok) return;
+  const data = await res.json();
+  if (!["starting", "running", "paused", "stopping"].includes(data.status)) return;
+
+  currentSession = data.id || currentSession;
+  activeAudioSource = data.settings?.audio_input || activeAudioSource;
+  paused = data.status === "paused";
+  stopping = data.status === "stopping";
+  if (data.title) $("sessionTitle").textContent = data.title;
+  if (currentSession) $("sessionId").textContent = currentSession;
+  setStatus(paused ? "已暂停" : stopping ? "停止中" : "运行中", !paused && !stopping);
+  updateRecordingUi(
+    true,
+    activeAudioSource === "file" ? "离线转写中" : "录音进行中",
+    activeAudioSource === "file" ? "正在把导入音频转为逐字稿" : "正在监听系统音频和麦克风"
+  );
+  if (currentSession) await loadSessionSegments(currentSession);
+}
+
+async function loadSessionSegments(sessionId) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/segments?limit=800`, {headers: headers()});
+  if (!res.ok) return;
+  const data = await res.json();
+  for (const seg of data.segments || []) {
+    addSegment(seg, "", {merge: false});
+  }
 }
 
 function handleEvent(ev) {
@@ -292,6 +378,9 @@ function handleEvent(ev) {
     return;
   }
   if (ev.type === "started") {
+    currentSession = ev.session_id || ev.session?.id || currentSession;
+    if (ev.session?.title) $("sessionTitle").textContent = ev.session.title;
+    if (currentSession) $("sessionId").textContent = currentSession;
     activeAudioSource = ev.session?.settings?.audio_input || activeAudioSource;
     setStatus("运行中", true);
     if (activeAudioSource === "file") {
@@ -302,10 +391,13 @@ function handleEvent(ev) {
     return;
   }
   if (ev.type === "segment") {
+    if (currentSession && ev.session_id && ev.session_id !== currentSession) return;
     addSegment(ev.segment, ev.asr);
     return;
   }
   if (ev.type === "completed") {
+    stopping = false;
+    updateRecordingUi(false);
     setStatus("已完成", false);
     renderFiles(ev.session_id, ev.files || {});
     if (activeAudioSource === "file") {
@@ -326,12 +418,15 @@ function handleEvent(ev) {
   }
 }
 
-function addSegment(seg, asr) {
+function addSegment(seg, asr, options = {}) {
+  const key = segmentKey(seg);
+  if (renderedSegmentKeys.has(key)) return;
   const sourceKey = seg.source || "system";
   const previous = lastRenderedBySource[sourceKey];
-  const merged = mergeRealtimeSegment(previous, seg);
+  const merged = options.merge === false ? {action: "append", segment: seg} : mergeRealtimeSegment(previous, seg);
   if (merged.action === "skip") return;
   if (merged.action === "replace") {
+    renderedSegmentKeys.add(key);
     previous.segment = merged.segment;
     previous.asr = asr || previous.asr;
     renderSegmentElement(previous.element, previous.segment, previous.asr);
@@ -344,9 +439,20 @@ function addSegment(seg, asr) {
   const transcript = $("transcript");
   transcript.appendChild(div);
   lastRenderedBySource[sourceKey] = {element: div, segment: {...seg}, asr: asr || ""};
+  renderedSegmentKeys.add(key);
   sentenceCount += 1;
   $("stats").textContent = `${sentenceCount} 句`;
   scrollTranscriptToBottom();
+}
+
+function segmentKey(seg) {
+  return [
+    seg.session_id || currentSession || "",
+    seg.source || "",
+    Number(seg.start || 0).toFixed(3),
+    Number(seg.end || 0).toFixed(3),
+    seg.text || ""
+  ].join("|");
 }
 
 function renderSegmentElement(element, seg, asr) {
@@ -755,6 +861,7 @@ $("openOutputDirLink").onclick = openOutputDir;
 $("audioFile").onchange = updateImportFileName;
 $("systemAudioFile").onchange = updateImportFileName;
 $("micAudioFile").onchange = updateImportFileName;
+setupImportDropZones();
 for (const input of document.querySelectorAll('input[name="audioSource"]')) {
   input.onchange = updateAudioSourceUi;
 }

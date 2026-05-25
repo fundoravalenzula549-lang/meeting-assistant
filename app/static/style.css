@@ -249,6 +249,11 @@ label {
   border-color: var(--blue);
   background: #eef5ff;
 }
+.file-drop.drag-over {
+  border-color: var(--green);
+  background: #edfdf7;
+  box-shadow: inset 0 0 0 1px rgba(15, 159, 110, .25);
+}
 .file-drop-title {
   color: var(--text);
   font-size: 15px;

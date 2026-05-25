@@ -416,6 +416,14 @@ class MeetingTask:
                             "BlackHole/系统音频设备，否则只能录到自己的麦克风。"
                         ),
                     )
+                elif source == SourceKind.MIC:
+                    await self._publish(
+                        "warning",
+                        message=(
+                            "麦克风轨没有检测到声音。请确认麦克风设备已连接、未被系统静音，"
+                            "并在 macOS 隐私设置中允许启动会议助手的程序访问麦克风。"
+                        ),
+                    )
                 continue
             await self._publish(
                 "status",

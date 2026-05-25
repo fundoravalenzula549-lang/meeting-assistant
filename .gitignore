@@ -9,8 +9,12 @@ data/**
 !data/.gitkeep
 !data/sessions/
 !data/sessions/.gitkeep
-!data/会议输出/
-!data/会议输出/.gitkeep
+!data/会议输出录音/
+!data/会议输出录音/.gitkeep
+!data/会议输出逐字稿/
+!data/会议输出逐字稿/.gitkeep
+!data/会议输出纪要/
+!data/会议输出纪要/.gitkeep
 !data/uploads/
 !data/uploads/.gitkeep
 *.log

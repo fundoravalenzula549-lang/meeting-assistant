@@ -47,6 +47,10 @@ data/sessions/<timestamp_title>/
     system.wav
     mic.wav
     mixed.wav
+
+data/会议输出录音/
+data/会议输出逐字稿/
+data/会议输出纪要/
 ```
 
 ## 安全默认

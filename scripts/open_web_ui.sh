@@ -8,6 +8,10 @@ LOG_DIR="$PROJECT_DIR/data/logs"
 LOG_FILE="$LOG_DIR/server.log"
 PID_FILE="$LOG_DIR/server.pid"
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export NO_PROXY="127.0.0.1,localhost,::1,${NO_PROXY:-}"
+export no_proxy="$NO_PROXY"
+
 mkdir -p "$LOG_DIR"
 
 is_web_ui_up() {
@@ -20,11 +24,23 @@ notify() {
 
 if ! is_web_ui_up; then
   cd "$PROJECT_DIR"
-  if [[ ! -f "$PID_FILE" ]] || ! /bin/kill -0 "$(<"$PID_FILE")" >/dev/null 2>&1; then
-    /usr/bin/nohup "$PROJECT_DIR/.venv/bin/meeting-workbench" server >> "$LOG_FILE" 2>&1 &
-    echo "$!" > "$PID_FILE"
-    notify "正在启动本地服务"
+  if [[ -f "$PID_FILE" ]] && /bin/kill -0 "$(<"$PID_FILE")" >/dev/null 2>&1; then
+    old_pid="$(<"$PID_FILE")"
+    /bin/kill "$old_pid" >/dev/null 2>&1 || true
+    for _ in {1..10}; do
+      if ! /bin/kill -0 "$old_pid" >/dev/null 2>&1; then
+        break
+      fi
+      /bin/sleep 0.3
+    done
+    if /bin/kill -0 "$old_pid" >/dev/null 2>&1; then
+      /bin/kill -9 "$old_pid" >/dev/null 2>&1 || true
+    fi
   fi
+
+  /usr/bin/nohup "$PROJECT_DIR/.venv/bin/meeting-workbench" server >> "$LOG_FILE" 2>&1 &
+  echo "$!" > "$PID_FILE"
+  notify "正在启动本地服务"
 
   for _ in {1..40}; do
     if is_web_ui_up; then

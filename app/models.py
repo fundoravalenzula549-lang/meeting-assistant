@@ -69,7 +69,7 @@ class MeetingSettings:
     remote_url: str = "http://127.0.0.1:8978"
     record: bool = True
     enable_overlay: bool = False
-    enable_post_meeting_ai: bool = True
+    enable_post_meeting_ai: bool = False
     enable_speaker_diarization: bool = True
 
 

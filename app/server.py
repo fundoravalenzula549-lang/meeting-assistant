@@ -39,7 +39,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/")
     async def index():
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(
+            static_dir / "index.html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/config")
     async def api_config():
@@ -127,13 +130,22 @@ def create_app(config: AppConfig) -> FastAPI:
             raise HTTPException(404, "file not found")
         return FileResponse(path)
 
+    @app.get("/api/sessions/{session_id}/segments")
+    async def api_session_segments(
+        session_id: str,
+        limit: int = 500,
+        _auth=Depends(_auth_dependency),
+    ):
+        safe_id = sanitize_filename(session_id)
+        return {"segments": store.read_segments(safe_id, limit=min(max(1, limit), 2000))}
+
     @app.post("/api/open-output-dir")
     async def api_open_output_dir(request: Request, _auth=Depends(_auth_dependency)):
         if not _is_local(request):
             raise HTTPException(403, "opening local paths is only allowed from this computer")
-        store.output_root.mkdir(parents=True, exist_ok=True)
-        _open_local_path(store.output_root)
-        return {"ok": True, "path": str(store.output_root)}
+        store.ensure_output_roots()
+        _open_local_path(store.transcript_output_root)
+        return {"ok": True, "path": str(store.transcript_output_root)}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
@@ -200,7 +212,7 @@ def _settings_from_body(body: dict, config: AppConfig) -> MeetingSettings:
         remote_url=body.get("remote_url") or config.asr.remote_url,
         record=bool(body.get("record", True)),
         enable_overlay=bool(body.get("enable_overlay", False)),
-        enable_post_meeting_ai=bool(body.get("enable_post_meeting_ai", True)),
+        enable_post_meeting_ai=bool(body.get("enable_post_meeting_ai", False)),
         enable_speaker_diarization=bool(body.get("enable_speaker_diarization", True)),
     )
 
@@ -264,21 +276,38 @@ def _resolve_audio_device_ids(
     system_device_id: int | str | None,
     mic_device_id: int | str | None,
 ) -> tuple[int | str | None, int | str | None]:
-    if _device_value(system_device_id) != "" and _device_value(system_device_id) == _device_value(mic_device_id):
-        try:
-            devices = list_input_devices()
-        except Exception:
-            return system_device_id, mic_device_id
-        mic = next((dev for dev in devices if dev.kind_hint == SourceKind.MIC and str(dev.id) != str(system_device_id)), None)
-        system = next((dev for dev in devices if dev.kind_hint == SourceKind.SYSTEM and str(dev.id) != str(mic_device_id)), None)
-        current = next((dev for dev in devices if str(dev.id) == str(system_device_id)), None)
-        if current and current.kind_hint == SourceKind.SYSTEM and mic:
-            return system_device_id, mic.id
-        if current and current.kind_hint == SourceKind.MIC and system:
-            return system.id, mic_device_id
-        if mic:
-            return system_device_id, mic.id
-    return system_device_id, mic_device_id
+    try:
+        devices = list_input_devices()
+    except Exception:
+        return system_device_id, mic_device_id
+
+    by_id = {str(dev.id): dev for dev in devices}
+    requested_system = by_id.get(_device_value(system_device_id))
+    requested_mic = by_id.get(_device_value(mic_device_id))
+
+    system = requested_system if requested_system and requested_system.kind_hint != SourceKind.MIC else None
+    mic = requested_mic if requested_mic and requested_mic.kind_hint != SourceKind.SYSTEM else None
+
+    if system is None:
+        system = next((dev for dev in devices if dev.kind_hint == SourceKind.SYSTEM), None)
+    if mic is None:
+        mic = next(
+            (
+                dev
+                for dev in devices
+                if dev.kind_hint == SourceKind.MIC
+                and (system is None or str(dev.id) != str(system.id))
+            ),
+            None,
+        )
+
+    if system and mic and str(system.id) == str(mic.id):
+        mic = next(
+            (dev for dev in devices if dev.kind_hint == SourceKind.MIC and str(dev.id) != str(system.id)),
+            None,
+        )
+
+    return (system.id if system else None, mic.id if mic else None)
 
 
 def _device_value(value: int | str | None) -> str:

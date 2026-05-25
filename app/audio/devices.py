@@ -70,4 +70,3 @@ def default_system_device_id() -> int | None:
         if dev.kind_hint == SourceKind.SYSTEM:
             return int(dev.id)
     return None
-

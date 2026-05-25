@@ -80,7 +80,9 @@ YYYYMMDD_HHMMSS_<meeting-topic-or-title>_会议纪要.md
 Human-facing outputs are also mirrored into:
 
 ```text
-data/会议输出
+data/会议输出录音
+data/会议输出逐字稿
+data/会议输出纪要
 ```
 
 `config.json`、会议录音、逐字稿、上传文件和日志默认不会进入 Git 仓库。

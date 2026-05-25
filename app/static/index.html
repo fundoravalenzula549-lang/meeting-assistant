@@ -58,19 +58,19 @@
           <label class="file-drop" for="audioFile">
             <input id="audioFile" type="file" hidden>
             <span class="file-drop-title">添加音频文件</span>
-            <span id="importFileName" class="file-drop-meta">尚未选择文件</span>
+            <span id="importFileName" class="file-drop-meta">点击选择，或拖入音频文件</span>
           </label>
         </div>
         <div id="dualImportFields" class="dual-import-fields" hidden>
           <label class="file-drop compact" for="systemAudioFile">
             <input id="systemAudioFile" type="file" hidden>
             <span class="file-drop-title">添加系统音频</span>
-            <span id="systemImportFileName" class="file-drop-meta">会议其他人的声音</span>
+            <span id="systemImportFileName" class="file-drop-meta">点击选择，或拖入对方音频</span>
           </label>
           <label class="file-drop compact" for="micAudioFile">
             <input id="micAudioFile" type="file" hidden>
             <span class="file-drop-title">添加麦克风音频</span>
-            <span id="micImportFileName" class="file-drop-meta">我的声音</span>
+            <span id="micImportFileName" class="file-drop-meta">点击选择，或拖入我方音频</span>
           </label>
         </div>
       </section>
@@ -113,7 +113,7 @@
 
       <div class="checks">
         <label id="recordOption"><input id="record" type="checkbox" checked> 录音</label>
-        <label><input id="postAi" type="checkbox" checked> 会后整理</label>
+        <label><input id="postAi" type="checkbox"> 会后整理</label>
         <label><input id="diarize" type="checkbox" checked> Speaker 识别</label>
       </div>
 
@@ -165,6 +165,6 @@
     </section>
   </div>
   <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260525-drag-import"></script>
 </body>
 </html>

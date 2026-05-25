@@ -8,7 +8,7 @@ from time import monotonic
 
 import numpy as np
 
-from .devices import default_mic_device_id, default_system_device_id
+from .devices import default_mic_device_id, default_system_device_id, list_input_devices
 from .recorder import to_mono_float32
 from .types import AudioChunk
 from ..models import SourceKind
@@ -82,10 +82,29 @@ class DualAudioCapture:
         self._loop = asyncio.get_running_loop()
         system_id = self.config.system_device_id
         mic_id = self.config.mic_device_id
+        try:
+            devices = list_input_devices()
+        except Exception:
+            devices = []
+        valid_ids = {str(dev.id) for dev in devices}
+        if system_id not in (None, "") and str(system_id) not in valid_ids:
+            system_id = None
+        if mic_id not in (None, "") and str(mic_id) not in valid_ids:
+            mic_id = None
         if system_id in (None, ""):
-            system_id = default_system_device_id()
+            system = next((dev for dev in devices if dev.kind_hint == SourceKind.SYSTEM), None)
+            system_id = system.id if system else default_system_device_id()
         if mic_id in (None, ""):
-            mic_id = default_mic_device_id()
+            mic = next(
+                (
+                    dev
+                    for dev in devices
+                    if dev.kind_hint == SourceKind.MIC
+                    and (system_id in (None, "") or str(dev.id) != str(system_id))
+                ),
+                None,
+            )
+            mic_id = mic.id if mic else default_mic_device_id()
         if system_id is None and mic_id is None:
             raise RuntimeError("no input audio devices found")
 
