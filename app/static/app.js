@@ -24,6 +24,11 @@ let waveformBars = [];
 let waveformHistory = [];
 let waveformLevels = {system: 0, mic: 0};
 const waveformBarCount = 64;
+let audioSampleRate = 16000;
+const recordingTrackCount = 3;
+let recordingHealth = createRecordingHealthState();
+let filenamePreviewTimer = null;
+const genericMeetingTitles = new Set(["", "online meeting", "untitled meeting", "meeting", "会议", "未命名会议"]);
 
 function headers() {
   const token = $("token").value.trim();
@@ -39,6 +44,9 @@ async function loadConfig() {
   const cfg = await (await fetch("/api/config")).json();
   if (cfg.data_dir) {
     $("outputPath").textContent = `Finder 默认打开：${cfg.data_dir}/会议输出逐字稿（录音和纪要在同级目录）`;
+  }
+  if (cfg.audio?.sample_rate) {
+    audioSampleRate = Number(cfg.audio.sample_rate) || audioSampleRate;
   }
   if (cfg.asr) {
     const configuredModel = cfg.asr.local_model || "Qwen/Qwen3-ASR-0.6B";
@@ -194,6 +202,7 @@ function prepareNewRun() {
   waveformBars = [];
   waveformHistory = [];
   waveformLevels = {system: 0, mic: 0};
+  recordingHealth = createRecordingHealthState();
   $("transcript").innerHTML = "";
   $("files").innerHTML = "";
   $("stats").textContent = "0 句";
@@ -249,12 +258,14 @@ function updateAudioSourceUi() {
     setStatus(isFile ? "待导入" : "待机", false);
   }
   updateImportModeUi();
+  updateFilenamePreview();
 }
 
 function updateImportModeUi() {
   const isDual = selectedImportMode() === "dual";
   $("singleImportFields").hidden = isDual;
   $("dualImportFields").hidden = !isDual;
+  updateFilenamePreview();
 }
 
 function updateImportFileName() {
@@ -267,6 +278,7 @@ function updateImportFileName() {
   syncFileDropState("audioFile");
   syncFileDropState("systemAudioFile");
   syncFileDropState("micAudioFile");
+  updateFilenamePreview();
 }
 
 function setupImportDropZones() {
@@ -325,13 +337,77 @@ function setupTopicControls() {
   for (const button of document.querySelectorAll("[data-topic]")) {
     button.addEventListener("click", () => {
       $("topic").value = button.dataset.topic || "";
+      updateFilenamePreview();
       $("topic").focus();
     });
   }
+  $("topic").addEventListener("input", updateFilenamePreview);
   $("clearTopicBtn").addEventListener("click", () => {
     $("topic").value = "";
+    updateFilenamePreview();
     $("topic").focus();
   });
+}
+
+function startFilenamePreviewTimer() {
+  updateFilenamePreview();
+  if (filenamePreviewTimer) return;
+  filenamePreviewTimer = setInterval(updateFilenamePreview, 30000);
+}
+
+function updateFilenamePreview() {
+  const preview = $("filenamePreview");
+  if (!preview) return;
+  preview.textContent = `${previewTimestamp()}_${previewSubject()}_逐字稿.txt`;
+}
+
+function previewTimestamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}${month}${day}_${hour}${minute}`;
+}
+
+function previewSubject() {
+  const topic = $("topic").value.trim();
+  if (topic) return safeFilenamePart(topic, "会议记录");
+  const imported = previewImportedSubject();
+  if (imported) return safeFilenamePart(imported, "会议记录");
+  const title = ($("title").value || "").trim();
+  if (title && !genericMeetingTitles.has(title.toLowerCase())) {
+    return safeFilenamePart(title, "会议记录");
+  }
+  return "会议记录";
+}
+
+function previewImportedSubject() {
+  if (selectedAudioSource() !== "file") return "";
+  if (selectedImportMode() === "dual") {
+    const systemFile = $("systemAudioFile").files[0];
+    const micFile = $("micAudioFile").files[0];
+    return fileStem(systemFile?.name) || fileStem(micFile?.name);
+  }
+  return fileStem($("audioFile").files[0]?.name);
+}
+
+function fileStem(name = "") {
+  const base = String(name || "").split(/[\\/]/).pop();
+  if (!base) return "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+function safeFilenamePart(text, fallback) {
+  const cleaned = String(text || "")
+    .replace(/[\/\\]/g, " ")
+    .replace(/[\0:*?"<>|]/g, "-")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .replace(/^[.\s]+|[.\s]+$/g, "")
+    .slice(0, 80);
+  return cleaned || fallback;
 }
 
 function firstDroppedFile(dataTransfer) {
@@ -416,6 +492,7 @@ async function restoreRunningSession() {
   if (!res.ok) return;
   const data = await res.json();
   if (!["starting", "running", "paused", "stopping"].includes(data.status)) return;
+  updateRecordingHealthFromStatus(data);
 
   currentSession = data.id || currentSession;
   activeAudioSource = data.settings?.audio_input || activeAudioSource;
@@ -475,7 +552,7 @@ function handleEvent(ev) {
   }
   if (ev.type === "audio_level") {
     if (currentSession && ev.session_id && ev.session_id !== currentSession) return;
-    updateRecordingWaveform(ev.source, ev.level);
+    updateRecordingWaveform(ev.source, ev.level, ev.peak);
     return;
   }
   if (ev.type === "segment") {
@@ -667,11 +744,12 @@ function waveformSubtitle(mode) {
   return "停止后自动生成逐字稿";
 }
 
-function updateRecordingWaveform(source, level) {
+function updateRecordingWaveform(source, level, peak = 0) {
   if (activeAudioSource === "file") return;
   if (!waveformShown && running && !stopping) showRecordingWaveform("recording");
   const key = source === "mic" ? "mic" : "system";
   waveformLevels[key] = clamp01(Number(level) || 0);
+  updateRecordingHealthFromLevel(key, level, peak);
   const combined = Math.max(waveformLevels.system, waveformLevels.mic, 0.03);
   waveformHistory.push(combined);
   waveformHistory = waveformHistory.slice(-waveformBarCount);
@@ -691,6 +769,116 @@ function renderWaveform() {
   const micMeter = $("micWaveMeter");
   if (systemMeter) systemMeter.style.width = `${Math.round(clamp01(waveformLevels.system) * 100)}%`;
   if (micMeter) micMeter.style.width = `${Math.round(clamp01(waveformLevels.mic) * 100)}%`;
+}
+
+function createRecordingHealthState() {
+  return {
+    diskFreeBytes: null,
+    diskTotalBytes: null,
+    system: createTrackHealth(),
+    mic: createTrackHealth()
+  };
+}
+
+function createTrackHealth() {
+  return {
+    lastSeenAt: 0,
+    lastAudibleAt: 0,
+    samples: []
+  };
+}
+
+function updateRecordingHealthFromLevel(source, level, peak = 0) {
+  const track = recordingHealth[source === "mic" ? "mic" : "system"];
+  const now = Date.now();
+  const sample = {
+    time: now,
+    level: clamp01(Number(level) || 0),
+    peak: clamp01(Number(peak) || 0)
+  };
+  track.lastSeenAt = now;
+  track.samples.push(sample);
+  track.samples = track.samples.filter(item => now - item.time <= 6000);
+  if (sample.level >= 0.035) {
+    track.lastAudibleAt = now;
+  }
+  renderRecordingHealth();
+}
+
+function updateRecordingHealthFromStatus(data) {
+  if (!data?.disk) return;
+  recordingHealth.diskFreeBytes = Number.isFinite(Number(data.disk.free)) ? Number(data.disk.free) : null;
+  recordingHealth.diskTotalBytes = Number.isFinite(Number(data.disk.total)) ? Number(data.disk.total) : null;
+  renderRecordingHealth();
+}
+
+function renderRecordingHealth() {
+  const panel = $("recordingHealth");
+  if (!panel) return;
+  const show = running && activeAudioSource !== "file";
+  panel.hidden = !show;
+  if (!show) return;
+
+  const elapsed = recordingStartedAt ? Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)) : 0;
+  renderTrackHealth("system", "systemHealth", "systemHealthText", elapsed);
+  renderTrackHealth("mic", "micHealth", "micHealthText", elapsed);
+
+  $("healthElapsed").textContent = formatDuration(elapsed);
+  const estimatedBytes = estimateRecordingBytes(elapsed);
+  $("healthSize").textContent = formatBytes(estimatedBytes);
+
+  const diskMetric = $("healthDiskMetric");
+  if (recordingHealth.diskFreeBytes == null) {
+    $("healthDisk").textContent = "检测中";
+    diskMetric.dataset.state = "waiting";
+  } else {
+    $("healthDisk").textContent = formatBytes(recordingHealth.diskFreeBytes);
+    diskMetric.dataset.state = diskState(recordingHealth.diskFreeBytes, estimatedBytes);
+  }
+}
+
+function renderTrackHealth(source, itemId, textId, elapsed) {
+  const status = trackHealthStatus(recordingHealth[source], elapsed);
+  $(itemId).dataset.state = status.state;
+  $(textId).textContent = status.text;
+}
+
+function trackHealthStatus(track, elapsed) {
+  const now = Date.now();
+  if (!track.lastSeenAt) {
+    return {state: "waiting", text: "等待音频"};
+  }
+  if (now - track.lastSeenAt > 3000) {
+    return {state: "bad", text: "信号中断"};
+  }
+  const recent = track.samples.filter(item => now - item.time <= 5000);
+  const maxLevel = Math.max(0, ...recent.map(item => item.level));
+  const maxPeak = Math.max(0, ...recent.map(item => item.peak));
+  if (maxPeak >= 0.98) {
+    return {state: "bad", text: "爆音风险"};
+  }
+  if (elapsed >= 10 && (!track.lastAudibleAt || now - track.lastAudibleAt > 15000)) {
+    return {state: "warn", text: "持续无声"};
+  }
+  if (maxLevel < 0.035) {
+    return {state: "waiting", text: "当前安静"};
+  }
+  if (maxLevel < 0.08) {
+    return {state: "warn", text: "声音偏小"};
+  }
+  return {state: "ok", text: "正常"};
+}
+
+function estimateRecordingBytes(elapsedSeconds) {
+  const wavHeaderBytes = 44 * recordingTrackCount;
+  const bytesPerSecond = audioSampleRate * 2 * recordingTrackCount;
+  return wavHeaderBytes + Math.max(0, elapsedSeconds) * bytesPerSecond;
+}
+
+function diskState(freeBytes, estimatedBytes) {
+  if (freeBytes < 1024 ** 3 || freeBytes < estimatedBytes * 1.25) return "bad";
+  if (freeBytes < 5 * 1024 ** 3) return "warn";
+  return "ok";
 }
 
 function clamp01(value) {
@@ -866,6 +1054,7 @@ async function pollRuntimeCompletion() {
   const res = await fetch("/api/status", {headers: headers()});
   if (!res.ok) return;
   const data = await res.json();
+  updateRecordingHealthFromStatus(data);
   if (currentSession && data.id && data.id !== currentSession) return;
   if (data.status === "completed") {
     completeRun(data.id || currentSession, data.files || {});
@@ -1046,6 +1235,7 @@ function updateRecordingUi(active, label = "", hint = "") {
   $("stopBtn").hidden = !active || isFile;
   $("recordingBanner").hidden = !active;
   $("topRecordingBadge").hidden = !active;
+  $("recordingHealth").hidden = !active || isFile;
   document.body.classList.toggle("is-running", active && !stopping);
   document.body.classList.toggle("is-stopping", stopping);
   if (label) $("recordingLabel").textContent = label;
@@ -1078,6 +1268,7 @@ function renderElapsed() {
   const text = formatDuration(elapsed);
   $("recordingElapsed").textContent = text;
   $("topRecordingElapsed").textContent = text;
+  renderRecordingHealth();
 }
 
 function formatDuration(totalSeconds) {
@@ -1178,6 +1369,7 @@ $("micAudioFile").onchange = updateImportFileName;
 setupImportDropZones();
 setupClearFileButtons();
 setupTopicControls();
+startFilenamePreviewTimer();
 for (const input of document.querySelectorAll('input[name="audioSource"]')) {
   input.onchange = updateAudioSourceUi;
 }

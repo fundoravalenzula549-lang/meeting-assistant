@@ -134,6 +134,113 @@ body.is-running .dot.on {
   font-size: 12px;
   line-height: 1.4;
 }
+.recording-health {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+.health-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.health-item {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e4eaf0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .78);
+}
+.health-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #a8b4c2;
+  box-shadow: 0 0 0 4px rgba(102, 120, 138, .1);
+}
+.health-item span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.health-item b {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.15;
+}
+.health-item em {
+  min-width: 0;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-item[data-state="ok"] {
+  border-color: rgba(15, 159, 110, .28);
+  background: rgba(15, 159, 110, .08);
+}
+.health-item[data-state="ok"] .health-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgba(15, 159, 110, .13);
+}
+.health-item[data-state="warn"] {
+  border-color: rgba(183, 121, 31, .36);
+  background: rgba(183, 121, 31, .09);
+}
+.health-item[data-state="warn"] .health-dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 4px rgba(183, 121, 31, .13);
+}
+.health-item[data-state="bad"] {
+  border-color: rgba(209, 67, 67, .38);
+  background: rgba(209, 67, 67, .09);
+}
+.health-item[data-state="bad"] .health-dot {
+  background: var(--red);
+  box-shadow: 0 0 0 4px rgba(209, 67, 67, .13);
+}
+.health-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.health-metrics span {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid #e4eaf0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .78);
+}
+.health-metrics small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+.health-metrics strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-metrics span[data-state="warn"] strong {
+  color: var(--amber);
+}
+.health-metrics span[data-state="bad"] strong {
+  color: var(--red);
+}
 
 label {
   display: grid;
@@ -193,6 +300,28 @@ label {
 .topic-presets button:hover {
   border-color: rgba(37, 99, 235, .5);
   background: #eef5ff;
+}
+.filename-preview {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid #dbe6f5;
+  border-radius: 7px;
+  background: #f8fbff;
+}
+.filename-preview span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.filename-preview strong {
+  min-width: 0;
+  color: var(--blue);
+  font-size: 12px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
 }
 .source-toggle {
   display: grid;

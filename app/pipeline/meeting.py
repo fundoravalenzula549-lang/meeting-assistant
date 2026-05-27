@@ -676,9 +676,12 @@ class MeetingRuntime:
             self.current.mute(source, muted)
 
     def status(self) -> dict:
+        disk = _disk_status(self.config.data_path)
         if not self.current:
-            return {"status": str(TaskStatus.IDLE)}
-        return self.current.snapshot()
+            return {"status": str(TaskStatus.IDLE), "disk": disk}
+        data = self.current.snapshot()
+        data["disk"] = disk
+        return data
 
 
 def _clean_text(text: str) -> str:
@@ -704,6 +707,17 @@ def _clean_text(text: str) -> str:
     if _has_repeated_fragment(text):
         return ""
     return text
+
+
+def _disk_status(path: Path) -> dict:
+    try:
+        target = path
+        while not target.exists() and target != target.parent:
+            target = target.parent
+        usage = shutil.disk_usage(target)
+        return {"free": usage.free, "total": usage.total, "used": usage.used}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def _count_realtime_segments(path) -> int:

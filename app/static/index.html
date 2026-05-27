@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meeting Transcription Workbench</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260526-stop-loading">
+  <link rel="stylesheet" href="/static/style.css?v=20260526-filename-preview">
 </head>
 <body>
   <main class="shell">
@@ -24,6 +24,23 @@
         </div>
         <div id="recordingElapsed" class="recording-elapsed">00:00</div>
         <div id="recordingHint" class="recording-hint">停止后自动整段转写</div>
+        <div id="recordingHealth" class="recording-health" hidden>
+          <div class="health-grid">
+            <div id="systemHealth" class="health-item" data-state="waiting">
+              <span class="health-dot"></span>
+              <span><b>系统音频</b><em id="systemHealthText">等待音频</em></span>
+            </div>
+            <div id="micHealth" class="health-item" data-state="waiting">
+              <span class="health-dot"></span>
+              <span><b>麦克风</b><em id="micHealthText">等待音频</em></span>
+            </div>
+          </div>
+          <div class="health-metrics">
+            <span id="healthElapsedMetric" data-state="ok"><small>已录制</small><strong id="healthElapsed">00:00</strong></span>
+            <span id="healthSizeMetric" data-state="ok"><small>预计大小</small><strong id="healthSize">0 MB</strong></span>
+            <span id="healthDiskMetric" data-state="waiting"><small>磁盘余量</small><strong id="healthDisk">检测中</strong></span>
+          </div>
+        </div>
       </div>
 
       <label class="hidden-field">会议标题<input id="title" value="Online Meeting"></label>
@@ -38,6 +55,10 @@
           <button type="button" data-topic="公司周会">公司周会</button>
           <button type="button" data-topic="项目细节对齐">项目细节对齐</button>
           <button type="button" data-topic="临时会议">临时会议</button>
+        </div>
+        <div class="filename-preview" aria-live="polite">
+          <span>本次将生成</span>
+          <strong id="filenamePreview">YYYYMMDD_HHMM_会议记录_逐字稿.txt</strong>
         </div>
       </div>
 
@@ -197,6 +218,6 @@
     </section>
   </div>
   <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
-  <script src="/static/app.js?v=20260526-import-loader"></script>
+  <script src="/static/app.js?v=20260526-filename-preview"></script>
 </body>
 </html>
